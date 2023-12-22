@@ -2,6 +2,7 @@ use std::{
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
 };
+use libc;
 
 use anyhow::{Context, Result};
 
@@ -58,6 +59,13 @@ impl<'a> Container<'a> {
     }
 
     fn exec(&self) -> Result<ExitStatus> {
+        // NOTE: Does not compile on macos
+        assert_eq!(
+            unsafe { libc::unshare(libc::CLONE_NEWPID) },
+            0,
+            "unshare fail"
+        );
+
         let mut command = std::process::Command::new(&self.command);
         command
             .args(self.args)
