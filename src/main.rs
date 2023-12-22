@@ -1,26 +1,74 @@
+use std::{
+    path::{Path, PathBuf},
+    process::{ExitStatus, Stdio},
+};
+
 use anyhow::{Context, Result};
-use std::{process::Stdio, io::Write};
 
-// Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
+use tempfile::TempDir;
+
 fn main() -> Result<()> {
-    // Uncomment this block to pass the first stage!
-    let args: Vec<_> = std::env::args().collect();
-    let command = &args[3];
-    let command_args = &args[4..];
-    let output = std::process::Command::new(command)
-        .args(command_args)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .output()
-        .with_context(|| {
-            format!(
-                "Tried to run '{}' with arguments {:?}",
-                command, command_args
-            )
-        })?;
-    
+    let env: Vec<_> = std::env::args().collect();
+    let args = Args::parse(&env)?;
+    let container = Container::new(&args)?;
+    let status = container.exec()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
 
-        std::io::stdout().write_all(&output.stdout)?;
-        std::io::stderr().write_all(&output.stderr)?;
-        std::process::exit(output.status.code().unwrap_or(1))
+struct Args<'a> {
+    command: &'a str,
+
+    args: &'a [String],
+}
+
+impl<'a> Args<'a> {
+    fn parse(args: &'a [String]) -> Result<Self> {
+        let command = args.get(3).context("Failed to parse command")?;
+
+        let command_args = args.get(4..).context("Failed to parse arguments")?;
+
+        Ok(Self {
+            command,
+
+            args: command_args,
+        })
+    }
+}
+
+struct Container<'a> {
+    command: PathBuf,
+    args: &'a [String],
+    root_dir: TempDir,
+}
+
+impl<'a> Container<'a> {
+    fn new(args: &'a Args) -> Result<Self> {
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp.path().join("dev"))?;
+        std::fs::File::create(temp.path().join("dev/null"))?;
+        let command_filename = Path::new(args.command)
+            .file_name()
+            .context("Invalid command")?;
+        std::fs::copy(args.command, temp.path().join(command_filename))?;
+        Ok(Self {
+            command: Path::new("/").join(command_filename),
+            args: args.args,
+            root_dir: temp,
+        })
+    }
+
+    fn exec(&self) -> Result<ExitStatus> {
+        let mut command = std::process::Command::new(&self.command);
+        command
+            .args(self.args)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::inherit())
+            .env_clear();
+
+        std::os::unix::fs::chroot(self.root_dir.path())?;
+        let mut handle = command.spawn()?;
+        let status = handle.wait()?;
+        Ok(status)
+    }
 }
